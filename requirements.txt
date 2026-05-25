@@ -1,0 +1,19 @@
+# core
+torch>=2.4.0
+torchvision
+transformers
+peft
+bitsandbytes>=0.46.1
+accelerate
+
+# datasets & evaluation
+datasets
+evaluate
+rouge_score
+lm_eval==0.4.2
+
+# utils
+tqdm
+numpy<2
+sentencepiece
+python-dotenv

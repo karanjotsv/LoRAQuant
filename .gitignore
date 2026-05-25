@@ -1,0 +1,34 @@
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# environment
+.env
+.conda/
+venv/
+env/
+
+# jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# model weights & results
+weights/
+result/
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# bigcode eval
+bigcode_*/
+
+# misc
+.DS_Store
+*.log
