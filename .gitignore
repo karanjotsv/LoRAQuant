@@ -20,7 +20,6 @@ env/
 
 # model weights & results
 weights/
-result/
 *.bin
 *.safetensors
 *.pt
