@@ -19,7 +19,7 @@ env/
 *.ipynb
 
 # model weights & results
-weights/
+/weights/
 *.bin
 *.safetensors
 *.pt
