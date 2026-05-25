@@ -1,4 +1,4 @@
-# LoRAQuant Study Notes
+# Notes
 
 ## Quantization Basics
 
