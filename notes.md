@@ -1,6 +1,8 @@
 # Notes
 
-## Quantization Basics
+## Concepts
+
+### Quantization Basics
 
 **What is quantization?**
 Trading precision for memory. A 32-bit float like `0.7341928` gets snapped to the nearest point on a coarse grid defined by your bitwidth. You store the integer index instead of the full float, saving memory.
@@ -23,9 +25,7 @@ Neural networks are overparameterized and robust to small weight perturbations. 
 1-bit:         +S or -S   (just the sign)
 ```
 
----
-
-## Range
+### Range
 
 The range is not fixed in advance - it is computed from the data itself:
 ```
@@ -36,9 +36,7 @@ The integer grid is stretched to fit exactly that range, so it is adaptive per g
 
 **Fixed-range quantization** (used in some hardware) assumes a fixed range like `[-1, 1]`. Simpler but worse accuracy.
 
----
-
-## Scale
+### Scale
 
 ```
 scale = (max_val - min_val) / (2^num_bits - 1)
@@ -54,11 +52,112 @@ Grid levels land at: -0.8, -0.3, 0.2, 0.7
 
 Smaller scale = finer grid = less error. More bits → smaller scale → better accuracy.
 
----
+### Zero-point
 
-## quantization_utils.py
+```
+zero = round(-min_val / scale)
+```
 
-### RTN(w, num_bits, group_size, along_column)
+Zero-point shifts the integer grid so it covers the actual weight range and maps to valid non-negative integers.
+
+**Why we need it:**
+Weights can be negative. Without zero-point, `round(w / scale)` anchors the grid at float `0.0`, pushing negative weights into negative integers which are outside the valid unsigned range `[0, 2^n - 1]`. After clamping, multiple weights collapse to the same bin - huge information loss.
+
+Example without zero-point, weights `[-1.2, -0.4, 0.3, 0.9]`, scale=0.7:
+```
+round(w / scale): [-2, -1, 0, 1]  → clamped to [0,3] → [0, 0, 0, 1]
+three weights collapsed to bin 0 - information destroyed
+```
+
+With zero-point=2:
+```
+round(w / scale) + 2: [0, 1, 2, 3]  → all valid, all distinct
+```
+
+**Why clamp zero-point?**
+Numerical edge cases can push it outside `[0, 2^n-1]`. The clamp keeps it valid.
+
+**Signed vs Unsigned integers:**
+- Unsigned (used here): `min_int=0`, bins always non-negative, zero-point always needed
+- Signed: range `[-2^(n-1), 2^(n-1)-1]`, bins can be negative, no zero-point needed, simpler math
+
+### RTN full example (2-bit, with and without zero-point)
+
+Weights: `[-1.2, -0.4, 0.3, 0.9]`, scale=0.7, zero=2
+
+**Without zero-point:**
+```
+integers: [-2, -1, 0, 1] → clamped → [0, 0, 0, 1]
+dequantized: [-1.4, -1.4, -1.4, -0.7]   ← three weights lost
+```
+
+**With zero-point:**
+```
+integers:    [0, 1, 2, 3]
+dequantized: [-1.4, -0.7, 0.0, 0.7]
+errors:      [0.2,  0.3,  0.3, 0.2]   ← small, all weights preserved
+```
+
+### Why RTN fails at 1-bit vs Binary quantization
+
+**RTN at 1-bit**, weights `[-1.2, -0.4, 0.3, 0.9]`:
+```
+grid: {0, 1},  scale=2.1,  zero=1
+integers:    [0, 1, 1, 1]
+dequantized: [-2.1, 0.0, 0.0, 0.0]   ← three weights collapse to 0.0
+```
+Grid is `{-S, 0}` - near-zero weights vanish entirely.
+
+**Binary quantization at 1-bit**, same weights:
+```
+scale = mean(abs(w)) = 0.7
+grid: {-0.7, +0.7}
+dequantized: [-0.7, -0.7, +0.7, +0.7]   ← sign preserved for all weights
+```
+Grid is `{-S, +S}` symmetric around zero - every weight survives as its sign.
+
+**The core difference:** RTN at 1-bit is anchored at zero so near-zero weights collapse and vanish. Binary quantization is symmetric around zero so sign information is always preserved.
+
+### Quantization-Aware Optimization (Straight-Through Estimator)
+
+**The Problem**
+After splitting a LoRA into sub-LoRAs, you want to quantize them with minimal error. Naively quantizing B and A directly gives whatever error it gives. But there are infinitely many B*, A* pairs that give the same product BA - some of those pairs happen to quantize more cleanly than others. The optimize() function searches for those better-conditioned pairs.
+
+**The Objective**
+```
+min over B*, A*:  || BA - Q(B*)Q(A*) ||_F
+
+where Q = quantize-dequantize
+initialized at:  B* = B,  A* = A
+```
+Target is always the original BA - we want to preserve the original LoRA's behavior.
+
+**The STE Trick**
+Gradient descent needs gradients. But `round()` inside quantization has zero gradient almost everywhere and is undefined at integers - standard backprop can't flow through it.
+
+STE approximation:
+- **Forward pass:** use real `round()` - actual quantization happens
+- **Backward pass:** pretend `round()` was identity - gradient flows straight through unchanged
+
+It's technically incorrect but empirically works well. It's the standard approach for quantization-aware training.
+
+**The Algorithm**
+```
+initialize B* = B,  A* = A
+
+for each step:
+    1. forward:  compute Q(B*)Q(A*) using real quantization
+    2. loss:     || BA - Q(B*)Q(A*) ||_F
+    3. backward: STE lets gradient flow through round()
+    4. update:   B* = B* - lr * grad,   A* = A* - lr * grad
+```
+
+**Why it works intuitively**
+Neural network weights aren't unique - many equivalent reparameterizations exist. Some happen to have distributions that sit naturally near quantization grid points. The optimization navigates that space to find a better-conditioned pair without changing the overall LoRA behavior.
+
+## Implementation
+
+### quantization_utils.py: RTN(w, num_bits, group_size, along_column)
 
 Uniform quantize-dequantize a weight matrix group-wise.
 
@@ -91,120 +190,7 @@ Errors:     [0.2, 0.2, 0.2, 0.2]
 ```
 0.3 and 0.7 both map to integer 3 - that's quantization error from having only 4 levels.
 
----
-
-## Zero-point
-
-```
-zero = round(-min_val / scale)
-```
-
-Zero-point shifts the integer grid so it covers the actual weight range and maps to valid non-negative integers.
-
-**Why we need it:**
-Weights can be negative. Without zero-point, `round(w / scale)` anchors the grid at float `0.0`, pushing negative weights into negative integers which are outside the valid unsigned range `[0, 2^n - 1]`. After clamping, multiple weights collapse to the same bin - huge information loss.
-
-Example without zero-point, weights `[-1.2, -0.4, 0.3, 0.9]`, scale=0.7:
-```
-round(w / scale): [-2, -1, 0, 1]  → clamped to [0,3] → [0, 0, 0, 1]
-three weights collapsed to bin 0 - information destroyed
-```
-
-With zero-point=2:
-```
-round(w / scale) + 2: [0, 1, 2, 3]  → all valid, all distinct
-```
-
-**Why clamp zero-point?**
-Numerical edge cases can push it outside `[0, 2^n-1]`. The clamp keeps it valid.
-
-**Signed vs Unsigned integers:**
-- Unsigned (used here): `min_int=0`, bins always non-negative, zero-point always needed
-- Signed: range `[-2^(n-1), 2^(n-1)-1]`, bins can be negative, no zero-point needed, simpler math
-
----
-
-## RTN full example (2-bit, with and without zero-point)
-
-Weights: `[-1.2, -0.4, 0.3, 0.9]`, scale=0.7, zero=2
-
-**Without zero-point:**
-```
-integers: [-2, -1, 0, 1] → clamped → [0, 0, 0, 1]
-dequantized: [-1.4, -1.4, -1.4, -0.7]   ← three weights lost
-```
-
-**With zero-point:**
-```
-integers:    [0, 1, 2, 3]
-dequantized: [-1.4, -0.7, 0.0, 0.7]
-errors:      [0.2,  0.3,  0.3, 0.2]   ← small, all weights preserved
-```
-
----
-
-## Why RTN fails at 1-bit vs Binary quantization
-
-**RTN at 1-bit**, weights `[-1.2, -0.4, 0.3, 0.9]`:
-```
-grid: {0, 1},  scale=2.1,  zero=1
-integers:    [0, 1, 1, 1]
-dequantized: [-2.1, 0.0, 0.0, 0.0]   ← three weights collapse to 0.0
-```
-Grid is `{-S, 0}` - near-zero weights vanish entirely.
-
-**Binary quantization at 1-bit**, same weights:
-```
-scale = mean(abs(w)) = 0.7
-grid: {-0.7, +0.7}
-dequantized: [-0.7, -0.7, +0.7, +0.7]   ← sign preserved for all weights
-```
-Grid is `{-S, +S}` symmetric around zero - every weight survives as its sign.
-
-**The core difference:** RTN at 1-bit is anchored at zero so near-zero weights collapse and vanish. Binary quantization is symmetric around zero so sign information is always preserved.
-
----
-
-## Straight-Through Estimator (STE) & optimize()
-
-### The Problem
-After splitting a LoRA into sub-LoRAs, you want to quantize them with minimal error. Naively quantizing B and A directly gives whatever error it gives. But there are infinitely many B*, A* pairs that give the same product BA - some of those pairs happen to quantize more cleanly than others. The optimize() function searches for those better-conditioned pairs.
-
-### The Objective
-```
-min over B*, A*:  || BA - Q(B*)Q(A*) ||_F
-
-where Q = quantize-dequantize
-initialized at:  B* = B,  A* = A
-```
-Target is always the original BA - we want to preserve the original LoRA's behavior.
-
-### The STE Trick
-Gradient descent needs gradients. But `round()` inside quantization has zero gradient almost everywhere and is undefined at integers - standard backprop can't flow through it.
-
-STE approximation:
-- **Forward pass:** use real `round()` - actual quantization happens
-- **Backward pass:** pretend `round()` was identity - gradient flows straight through unchanged
-
-It's technically incorrect but empirically works well. It's the standard approach for quantization-aware training.
-
-### The Algorithm
-```
-initialize B* = B,  A* = A
-
-for each step:
-    1. forward:  compute Q(B*)Q(A*) using real quantization
-    2. loss:     || BA - Q(B*)Q(A*) ||_F
-    3. backward: STE lets gradient flow through round()
-    4. update:   B* = B* - lr * grad,   A* = A* - lr * grad
-```
-
-### Why it works intuitively
-Neural network weights aren't unique - many equivalent reparameterizations exist. Some happen to have distributions that sit naturally near quantization grid points. The optimization navigates that space to find a better-conditioned pair without changing the overall LoRA behavior.
-
----
-
-## Command-line Arguments
+## CLI Reference
 
 ### Model & Adapter
 - `--model_name` - which base LLM to load. choices: `Llama-2-7b-hf`, `Mistral-7B-v0.1`, `Llama-2-13b-hf`
@@ -238,9 +224,7 @@ Neural network weights aren't unique - many equivalent reparameterizations exist
 ### Optimization
 - `--opt` - enable STE gradient optimization before quantizing. improves accuracy at the cost of more compute
 
----
-
-## Replication Results
+## Results
 
 ### Setup
 - Model: LLaMA 2-7B
@@ -248,7 +232,7 @@ Neural network weights aren't unique - many equivalent reparameterizations exist
 - Adapter: pretrained weights from paper's Mega link
 - All runs use `--along_column_B --opt --num_fewshot 0 --group_size 128`
 
-### GSM8K Results - LLaMA 2-7B
+### GSM8K, LLaMA 2-7B
 
 | Method | GSM8K (replication) | GSM8K (original) | Diff | Avg Bits (replication) |
 |:------:|:-------------------:|:----------------:|:----:|:---------------------:|
