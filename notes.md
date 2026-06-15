@@ -27,7 +27,7 @@ Neural networks are overparameterized and robust to small weight perturbations. 
 
 ## Range
 
-The range is not fixed in advance — it is computed from the data itself:
+The range is not fixed in advance - it is computed from the data itself:
 ```
 min_val = minimum weight in the group
 max_val = maximum weight in the group
@@ -44,7 +44,7 @@ The integer grid is stretched to fit exactly that range, so it is adaptive per g
 scale = (max_val - min_val) / (2^num_bits - 1)
 ```
 
-Scale is the size of one interval on the grid — how much float range each integer step covers.
+Scale is the size of one interval on the grid - how much float range each integer step covers.
 
 Example with 2-bit and range `[-0.8, 0.7]`:
 ```
@@ -68,13 +68,13 @@ Snaps each weight to the nearest point on a uniform integer grid defined by [0, 
 Without grouping, one scale covers the entire matrix. Outliers force a large scale, squashing small weights into few levels. Group-wise gives each chunk its own scale, limiting outlier impact. group_size=128 is the standard sweet spot used by GPTQ, AWQ, and this paper.
 
 **along_column:**
-Controls whether groups are formed row-wise or column-wise. Implemented via transpose trick — transpose, quantize row-wise, transpose back. For LoRA, B(col) + A(row) works best because SVD reparameterization concentrates singular value magnitudes into columns of B and rows of A.
+Controls whether groups are formed row-wise or column-wise. Implemented via transpose trick - transpose, quantize row-wise, transpose back. For LoRA, B(col) + A(row) works best because SVD reparameterization concentrates singular value magnitudes into columns of B and rows of A.
 
 **group_size=-1:**
-Sentinel value meaning no grouping — entire matrix is one group. Just a convention, could have been None or 0.
+Sentinel value meaning no grouping - entire matrix is one group. Just a convention, could have been None or 0.
 
 **Why dequantize?**
-This codebase simulates quantization to measure accuracy impact, rather than actually storing integers. Dequantizing back to float lets normal PyTorch ops run without custom CUDA kernels. The round-trip float→int→float is lossy — weights are snapped to grid points — which is where the error comes from.
+This codebase simulates quantization to measure accuracy impact, rather than actually storing integers. Dequantizing back to float lets normal PyTorch ops run without custom CUDA kernels. The round-trip float→int→float is lossy - weights are snapped to grid points - which is where the error comes from.
 
 **Asymmetric vs Symmetric quantization:**
 - Asymmetric (used here): range is [min, max], needs zero-point to shift grid. Better accuracy.
@@ -89,7 +89,7 @@ Quantize:   [0, 2, 3, 3]
 Dequantize: [-1.0, 0.0, 0.5, 0.5]
 Errors:     [0.2, 0.2, 0.2, 0.2]
 ```
-0.3 and 0.7 both map to integer 3 — that's quantization error from having only 4 levels.
+0.3 and 0.7 both map to integer 3 - that's quantization error from having only 4 levels.
 
 ---
 
@@ -102,12 +102,12 @@ zero = round(-min_val / scale)
 Zero-point shifts the integer grid so it covers the actual weight range and maps to valid non-negative integers.
 
 **Why we need it:**
-Weights can be negative. Without zero-point, `round(w / scale)` anchors the grid at float `0.0`, pushing negative weights into negative integers which are outside the valid unsigned range `[0, 2^n - 1]`. After clamping, multiple weights collapse to the same bin — huge information loss.
+Weights can be negative. Without zero-point, `round(w / scale)` anchors the grid at float `0.0`, pushing negative weights into negative integers which are outside the valid unsigned range `[0, 2^n - 1]`. After clamping, multiple weights collapse to the same bin - huge information loss.
 
 Example without zero-point, weights `[-1.2, -0.4, 0.3, 0.9]`, scale=0.7:
 ```
 round(w / scale): [-2, -1, 0, 1]  → clamped to [0,3] → [0, 0, 0, 1]
-three weights collapsed to bin 0 — information destroyed
+three weights collapsed to bin 0 - information destroyed
 ```
 
 With zero-point=2:
@@ -151,7 +151,7 @@ grid: {0, 1},  scale=2.1,  zero=1
 integers:    [0, 1, 1, 1]
 dequantized: [-2.1, 0.0, 0.0, 0.0]   ← three weights collapse to 0.0
 ```
-Grid is `{-S, 0}` — near-zero weights vanish entirely.
+Grid is `{-S, 0}` - near-zero weights vanish entirely.
 
 **Binary quantization at 1-bit**, same weights:
 ```
@@ -159,7 +159,7 @@ scale = mean(abs(w)) = 0.7
 grid: {-0.7, +0.7}
 dequantized: [-0.7, -0.7, +0.7, +0.7]   ← sign preserved for all weights
 ```
-Grid is `{-S, +S}` symmetric around zero — every weight survives as its sign.
+Grid is `{-S, +S}` symmetric around zero - every weight survives as its sign.
 
 **The core difference:** RTN at 1-bit is anchored at zero so near-zero weights collapse and vanish. Binary quantization is symmetric around zero so sign information is always preserved.
 
@@ -177,14 +177,14 @@ min over B*, A*:  || BA - Q(B*)Q(A*) ||_F
 where Q = quantize-dequantize
 initialized at:  B* = B,  A* = A
 ```
-Target is always the original BA — we want to preserve the original LoRA's behavior.
+Target is always the original BA - we want to preserve the original LoRA's behavior.
 
 ### The STE Trick
-Gradient descent needs gradients. But `round()` inside quantization has zero gradient almost everywhere and is undefined at integers — standard backprop can't flow through it.
+Gradient descent needs gradients. But `round()` inside quantization has zero gradient almost everywhere and is undefined at integers - standard backprop can't flow through it.
 
 STE approximation:
-- **Forward pass:** use real `round()` — actual quantization happens
-- **Backward pass:** pretend `round()` was identity — gradient flows straight through unchanged
+- **Forward pass:** use real `round()` - actual quantization happens
+- **Backward pass:** pretend `round()` was identity - gradient flows straight through unchanged
 
 It's technically incorrect but empirically works well. It's the standard approach for quantization-aware training.
 
@@ -207,36 +207,36 @@ Neural network weights aren't unique - many equivalent reparameterizations exist
 ## Command-line Arguments
 
 ### Model & Adapter
-- `--model_name` — which base LLM to load. choices: `Llama-2-7b-hf`, `Mistral-7B-v0.1`, `Llama-2-13b-hf`
-- `--adapter_path` — path to the pre-trained LoRA adapter directory on disk
+- `--model_name` - which base LLM to load. choices: `Llama-2-7b-hf`, `Mistral-7B-v0.1`, `Llama-2-13b-hf`
+- `--adapter_path` - path to the pre-trained LoRA adapter directory on disk
 
 ### Dataset
-- `--dataset` — which dataset to evaluate on. choices: `gsm8k` (math), `minerva_math` (harder math), `xsum` (summarization)
-- `--num_fewshot` — number of in-context examples shown before each test question. paper uses 0 (no examples)
+- `--dataset` - which dataset to evaluate on. choices: `gsm8k` (math), `minerva_math` (harder math), `xsum` (summarization)
+- `--num_fewshot` - number of in-context examples shown before each test question. paper uses 0 (no examples)
 
 ### Quantization Method
-- `--method` — which quantization strategy to apply to LoRA weights:
-  - `fp` — no quantization, full precision baseline
-  - `rtn` — round-to-nearest uniform quantization
-  - `bin` — 1-bit binary quantization
-  - `loraq_ratio` — paper's main method, dynamic rank split by variance coverage
-  - `loraq_svd` — SVD split with fixed rank_high
-  - `loraq_random` — ablation baseline, random dimension assignment
-  - `loraq_norm` — ablation baseline, norm-based dimension assignment
+- `--method` - which quantization strategy to apply to LoRA weights:
+  - `fp` - no quantization, full precision baseline
+  - `rtn` - round-to-nearest uniform quantization
+  - `bin` - 1-bit binary quantization
+  - `loraq_ratio` - paper's main method, dynamic rank split by variance coverage
+  - `loraq_svd` - SVD split with fixed rank_high
+  - `loraq_random` - ablation baseline, random dimension assignment
+  - `loraq_norm` - ablation baseline, norm-based dimension assignment
 
 ### Quantization Hyperparameters
-- `--num_bits_high` — bitwidth for the high-precision sub-LoRA (2 or 3 in the paper)
-- `--num_bits_low` — bitwidth for rtn/bin methods (not used by loraq methods, those always use 1-bit for low sub-LoRA)
-- `--group_size` — elements per quantization group. default 128, standard across GPTQ/AWQ/this paper
-- `--rank_high` — fixed number of dimensions for high-precision sub-LoRA. only used by `loraq_svd/random/norm`
-- `--ratio` — minimum variance coverage for dynamic rank selection. only used by `loraq_ratio`. e.g. 0.8 means top-h dimensions must explain 80% of variance
+- `--num_bits_high` - bitwidth for the high-precision sub-LoRA (2 or 3 in the paper)
+- `--num_bits_low` - bitwidth for rtn/bin methods (not used by loraq methods, those always use 1-bit for low sub-LoRA)
+- `--group_size` - elements per quantization group. default 128, standard across GPTQ/AWQ/this paper
+- `--rank_high` - fixed number of dimensions for high-precision sub-LoRA. only used by `loraq_svd/random/norm`
+- `--ratio` - minimum variance coverage for dynamic rank selection. only used by `loraq_ratio`. e.g. 0.8 means top-h dimensions must explain 80% of variance
 
 ### Quantization Direction
-- `--along_column_B` — quantize B column-wise instead of row-wise. recommended, matches SVD reparameterization
-- `--along_column_A` — quantize A column-wise instead of row-wise. not recommended, paper finds row-wise better for A
+- `--along_column_B` - quantize B column-wise instead of row-wise. recommended, matches SVD reparameterization
+- `--along_column_A` - quantize A column-wise instead of row-wise. not recommended, paper finds row-wise better for A
 
 ### Optimization
-- `--opt` — enable STE gradient optimization before quantizing. improves accuracy at the cost of more compute
+- `--opt` - enable STE gradient optimization before quantizing. improves accuracy at the cost of more compute
 
 ---
 
@@ -248,7 +248,7 @@ Neural network weights aren't unique - many equivalent reparameterizations exist
 - Adapter: pretrained weights from paper's Mega link
 - All runs use `--along_column_B --opt --num_fewshot 0 --group_size 128`
 
-### GSM8K Results — LLaMA 2-7B
+### GSM8K Results - LLaMA 2-7B
 
 | Method | GSM8K (replication) | GSM8K (original) | Diff | Avg Bits (replication) |
 |:------:|:-------------------:|:----------------:|:----:|:---------------------:|

@@ -74,9 +74,16 @@ def one_bit_quant(w, group_size, along_column=False):
     return w_dequant
 
 
-def quantize(w, group_size, num_bits, along_column=False, method='rtn'):
+def quant(w, group_size, num_bits, along_column=False, method='rtn'):
     if method == 'bin':
         assert num_bits == 1, 'must quantize to 1 bit if using binary quantization'
         return one_bit_quant(w, group_size, along_column)
     elif method == 'rtn':
         return RTN_quant(w, num_bits, group_size, along_column)
+
+
+def complex_quant(Z, group_size, num_bits, along_column=False, method='rtn'):
+    # apply quantize independently to real and imaginary parts
+    re = quant(Z.real.contiguous(), group_size, num_bits, along_column, method)
+    im = quant(Z.imag.contiguous(), group_size, num_bits, along_column, method)
+    return torch.complex(re, im)

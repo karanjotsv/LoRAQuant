@@ -26,17 +26,20 @@ DATASET_MAP = {
 
 def get_output_name(args):
     """Builds result file path based on method and hyperparameters."""
-    base = f"result/{args.model_name}/{args.adapter_path}/{args.dataset}"
+    base = args.output_dir if args.output_dir else f"result/{args.model_name}/{args.adapter_path}/{args.dataset}"
     if args.method == 'fp':
         return f"{base}/fp_numfewshot{args.num_fewshot}.json"
     elif args.method in ['rtn', 'bin']:
         return f"{base}/{args.method}_{args.num_bits_low}bit_numfewshot{args.num_fewshot}.json"
-    elif args.method == 'loraq_ratio':
-        return f"{base}/loraq_ratio_r{args.ratio}_{args.num_bits_high}_opt{args.opt}_Bcol{args.along_column_B}_Acol{args.along_column_A}_numfewshot{args.num_fewshot}.json"
-    elif args.method == 'loraq_svd':
-        return f"{base}/loraq_svd_h{args.rank_high}_{args.num_bits_high}_opt{args.opt}_Bcol{args.along_column_B}_Acol{args.along_column_A}_numfewshot{args.num_fewshot}.json"
-    else:
-        return f"{base}/{args.method}_h{args.rank_high}_{args.num_bits_high}_opt{args.opt}_numfewshot{args.num_fewshot}.json"
+    elif args.method == 'loraq':
+        if args.decomp == 'fft':
+            rank_tag = f"ratio{args.ratio}" if args.ratio is not None else f"h{args.rank_high}"
+            return f"{base}/loraq_fft_{rank_tag}_{args.num_bits_high}_opt{args.opt}_Bcol{args.along_column_B}_Acol{args.along_column_A}_numfewshot{args.num_fewshot}.json"
+        elif args.decomp == 'svd':
+            rank_tag = f"ratio{args.ratio}" if args.ratio is not None else f"h{args.rank_high}"
+            return f"{base}/loraq_svd_{rank_tag}_{args.num_bits_high}_opt{args.opt}_Bcol{args.along_column_B}_Acol{args.along_column_A}_numfewshot{args.num_fewshot}.json"
+        else:
+            return f"{base}/loraq_{args.decomp}_h{args.rank_high}_{args.num_bits_high}_opt{args.opt}_numfewshot{args.num_fewshot}.json"
 
 
 def parse_args():
@@ -49,17 +52,20 @@ def parse_args():
     parser.add_argument("--dataset", type=str, default='gsm8k',
                         choices=["gsm8k", "minerva_math", "xsum"])
     parser.add_argument("--method", required=True,
-                        choices=['fp', 'rtn', 'bin', 'loraq_svd', 'loraq_ratio', 'loraq_random', 'loraq_norm'])
+                        choices=['fp', 'rtn', 'bin', 'loraq'])
+    parser.add_argument("--decomp", type=str, default=None,
+                        choices=['svd', 'fft', 'random', 'norm'])
     parser.add_argument("--split", type=str, default='sqrt', choices=['sqrt', 'B', 'A'])
     parser.add_argument("--num_bits_high", type=int)
     parser.add_argument("--num_bits_low", type=int)
     parser.add_argument("--group_size", type=int, default=128)
     parser.add_argument("--rank_high", type=int, default=4)
-    parser.add_argument("--ratio", type=float, default=0.7)
+    parser.add_argument("--ratio", type=float, default=None)
     parser.add_argument("--num_fewshot", type=int, default=0)
     parser.add_argument("--along_column_B", action='store_true')
     parser.add_argument("--along_column_A", action='store_true')
     parser.add_argument("--opt", action='store_true')
+    parser.add_argument("--output_dir", type=str, default=None)
 
     return parser.parse_args()
 
@@ -93,7 +99,7 @@ def main():
     lora_state_dict = get_peft_model_state_dict(model)
 
     if args.method == 'fp':
-        # full precision baseline — no quantization
+        # full precision baseline - no quantization
         pass
 
     elif args.method in ['rtn', 'bin']:
@@ -108,10 +114,13 @@ def main():
             lora_B = model.get_submodule(lora_B_name).weight
             lora_A = model.get_submodule(lora_A_name).weight
 
-            lora_B.data = quantize(lora_B, group_size=args.group_size, num_bits=args.num_bits_low, method=args.method)
-            lora_A.data = quantize(lora_A, group_size=args.group_size, num_bits=args.num_bits_low, method=args.method)
+            lora_B.data = quant(lora_B, group_size=args.group_size, num_bits=args.num_bits_low, method=args.method)
+            lora_A.data = quant(lora_A, group_size=args.group_size, num_bits=args.num_bits_low, method=args.method)
 
-    elif 'loraq' in args.method:
+    elif args.method == 'loraq':
+        if args.decomp is None:
+            raise ValueError("--decomp is required when --method is loraq")
+
         total_bits, total_params = 0, 0
 
         for key in tqdm(lora_state_dict):
@@ -124,11 +133,19 @@ def main():
             lora_B = model.get_submodule(lora_B_name).weight
             lora_A = model.get_submodule(lora_A_name).weight
 
-            # mixed-precision SVD quantization
-            B, A, num_bits, num_params = lora_quant(
-                lora_B, lora_A, method=args.method.replace('loraq_', ''), rank_high=args.rank_high, num_bits_high=args.num_bits_high, group_size=args.group_size,
-                along_column_B=args.along_column_B, along_column_A=args.along_column_A, split=args.split, ratio=args.ratio, opt=args.opt
-            )
+            if args.decomp == 'fft':
+                B, A, num_bits, num_params = lora_quant_fft(
+                    lora_B, lora_A, bits_hi=args.num_bits_high, gs=args.group_size,
+                    col_B=args.along_column_B, col_A=args.along_column_A,
+                    ratio=args.ratio, rh=args.rank_high
+                )
+            else:
+                B, A, num_bits, num_params = lora_quant_svd(
+                    lora_B, lora_A, decomp=args.decomp, rh=args.rank_high,
+                    bits_hi=args.num_bits_high, gs=args.group_size,
+                    col_B=args.along_column_B, col_A=args.along_column_A,
+                    split=args.split, ratio=args.ratio, opt=args.opt
+                )
 
             total_bits   += num_bits
             total_params += num_params
@@ -136,7 +153,7 @@ def main():
             lora_B.data = B.clone()
             lora_A.data = A.clone()
 
-        print(f"avg bits = {total_bits / total_params:.4f} | method = {args.method} | ratio = {args.ratio} | model = {args.model_name}")
+        print(f"avg bits = {total_bits / total_params:.4f} | decomp = {args.decomp} | ratio = {args.ratio} | model = {args.model_name}")
 
     # --- evaluation ---
     output_path = get_output_name(args)
@@ -186,3 +203,5 @@ if __name__ == "__main__":
 
 
 # python main.py --model_name meta-llama/Llama-2-7b-hf --adapter_path ./weights/llama7b_metamath_lora16/checkpoint-24688 --dataset gsm8k --method fp --num_fewshot 0
+# python main.py --model_name meta-llama/Llama-2-7b-hf --adapter_path ./weights/llama7b_metamath_lora16/checkpoint-24688 --dataset gsm8k --method loraq --decomp svd --ratio 0.9 --num_bits_high 3 --along_column_B --opt
+# python main.py --model_name meta-llama/Llama-2-7b-hf --adapter_path ./weights/llama7b_metamath_lora16/checkpoint-24688 --dataset gsm8k --method loraq --decomp fft --ratio 0.9 --num_bits_high 3 --along_column_B
